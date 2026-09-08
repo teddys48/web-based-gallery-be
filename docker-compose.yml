@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  gallery-be:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gallery_backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - MEDIA_DIR=/app/media
+      - THUMBNAIL_DIR=/app/.thumbnails
+      - DB_PATH=/app/data/gallery.db
+      - THUMB_WIDTH=400
+      - THUMB_HEIGHT=400
+      - MAX_SCAN_WORKERS=4
+    volumes:
+      - ./media:/app/media
+      - ./.thumbnails:/app/.thumbnails
+      - ./data:/app/data

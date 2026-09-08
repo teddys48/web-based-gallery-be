@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.thumbnails/
+.thumbnails_test/
+gallery_test.db*
+server
+tmp/
+scratch/
