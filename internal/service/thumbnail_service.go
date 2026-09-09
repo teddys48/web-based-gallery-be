@@ -27,6 +27,7 @@ type ThumbnailService interface {
 	GenerateVideoThumbnail(sourcePath string) (string, float64, int, int, error)
 	GetThumbnailPath(sourcePath string) string
 	DeleteThumbnail(sourcePath string) error
+	GetOrGenerateThumbnail(sourcePath, mediaType string) (string, error)
 }
 
 type thumbnailService struct {
@@ -42,6 +43,28 @@ func (s *thumbnailService) GetThumbnailPath(sourcePath string) string {
 	hash := sha256.Sum256([]byte(sourcePath))
 	hashStr := hex.EncodeToString(hash[:16])
 	return filepath.Join(s.cfg.ThumbnailDir, fmt.Sprintf("thumb_%s.jpg", hashStr))
+}
+
+func (s *thumbnailService) GetOrGenerateThumbnail(sourcePath, mediaType string) (string, error) {
+	destPath := s.GetThumbnailPath(sourcePath)
+
+	if isValidThumbnail(destPath) && !isFallbackPlaceholder(destPath) {
+		return destPath, nil
+	}
+
+	ext := strings.ToLower(filepath.Ext(sourcePath))
+	videoExts := map[string]bool{
+		".mp4": true, ".mkv": true, ".mov": true, ".avi": true,
+		".webm": true, ".m4v": true, ".flv": true, ".3gp": true,
+		".ts": true, ".wmv": true,
+	}
+
+	if mediaType == "video" || videoExts[ext] {
+		thumbPath, _, _, _, err := s.GenerateVideoThumbnail(sourcePath)
+		return thumbPath, err
+	}
+
+	return s.GenerateThumbnail(sourcePath)
 }
 
 func (s *thumbnailService) DeleteThumbnail(sourcePath string) error {
@@ -287,6 +310,23 @@ func pointInTriangle(px, py, x1, y1, x2, y2, x3, y3 float64) bool {
 
 func sign(pX, pY, x1, y1, x2, y2 float64) float64 {
 	return (pX-x2)*(y1-y2) - (x1-x2)*(pY-y2)
+}
+
+func isFallbackPlaceholder(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return false
+	}
+
+	bounds := img.Bounds()
+	r, g, b, _ := img.At(bounds.Min.X, bounds.Min.Y).RGBA()
+	return uint8(r>>8) == 30 && uint8(g>>8) == 45 && uint8(b>>8) == 70
 }
 
 func isValidThumbnail(path string) bool {

@@ -22,7 +22,7 @@ FROM alpine:3.20
 WORKDIR /app
 
 # Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata ffmpeg
 
 # Create application directories
 RUN mkdir -p /app/media /app/.thumbnails /app/data
@@ -45,6 +45,6 @@ ENV PORT=8080 \
 EXPOSE 8080
 
 # Volumes for persistent data
-VOLUME ["/app/media", "/app/.thumbnails", "/app/data"]
+# VOLUME ["/app/media", "/app/.thumbnails", "/app/data"]
 
 ENTRYPOINT ["/app/server"]

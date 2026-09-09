@@ -6,6 +6,7 @@ import (
 
 	"gallery-be/config"
 	"gallery-be/internal/database"
+	"gallery-be/internal/model"
 	"gallery-be/internal/repository"
 	"gallery-be/internal/service"
 )
@@ -31,7 +32,7 @@ func TestPhotoServiceAndScanner(t *testing.T) {
 
 	exifSvc := service.NewEXIFService()
 	thumbSvc := service.NewThumbnailService(cfg)
-	photoSvc := service.NewPhotoService(photoRepo, folderRepo)
+	photoSvc := service.NewPhotoService(photoRepo, folderRepo, thumbSvc)
 	scannerSvc := service.NewScannerService(cfg, photoRepo, exifSvc, thumbSvc)
 
 	// Test Manual Scan Trigger
@@ -83,5 +84,46 @@ func TestPhotoServiceAndScanner(t *testing.T) {
 		if p.FileName != first.FileName {
 			t.Errorf("Expected filename %s, got %s", first.FileName, p.FileName)
 		}
+
+		// Test GetPhotoThumbnailByID
+		thumbPath, _, err := photoSvc.GetPhotoThumbnailByID(first.ID)
+		if err != nil || thumbPath == "" {
+			t.Fatalf("GetPhotoThumbnailByID failed: %v", err)
+		}
+		t.Logf("Thumbnail path by ID: %s", thumbPath)
+
+		// Test GetPhotoThumbnailByPath
+		thumbPathByPath, err := photoSvc.GetPhotoThumbnailByPath(first.FilePath)
+		if err != nil || thumbPathByPath == "" {
+			t.Fatalf("GetPhotoThumbnailByPath failed: %v", err)
+		}
+		t.Logf("Thumbnail path by Path: %s", thumbPathByPath)
+
+		// Test GetPhotosByDate
+		targetDate := first.TakenAt.Format("2006-01-02")
+		datePhotos, dateTotal, err := photoSvc.GetPhotosByDate(model.DateFilter{
+			Date:  targetDate,
+			Page:  1,
+			Limit: 10,
+		})
+		if err != nil {
+			t.Fatalf("GetPhotosByDate failed: %v", err)
+		}
+		if dateTotal == 0 || len(datePhotos) == 0 {
+			t.Errorf("Expected photos on date %s, got total %d, items %d", targetDate, dateTotal, len(datePhotos))
+		}
+		t.Logf("Found %d photos on date %s", dateTotal, targetDate)
+
+		// Test GetPhotosByDateGrouped
+		groups, err := photoSvc.GetPhotosByDateGrouped(model.DateFilter{
+			Date: targetDate,
+		})
+		if err != nil {
+			t.Fatalf("GetPhotosByDateGrouped failed: %v", err)
+		}
+		if len(groups) == 0 {
+			t.Errorf("Expected date groups for %s, got 0", targetDate)
+		}
+		t.Logf("Found %d date groups for date %s", len(groups), targetDate)
 	}
 }

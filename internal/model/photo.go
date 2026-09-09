@@ -36,3 +36,20 @@ type TimelineBucket struct {
 	Month int   `json:"month"`
 	Count int64 `json:"count"`
 }
+
+type DateFilter struct {
+	Date      string `json:"date,omitempty"`       // YYYY-MM-DD or YYYY-MM
+	StartDate string `json:"start_date,omitempty"` // YYYY-MM-DD
+	EndDate   string `json:"end_date,omitempty"`   // YYYY-MM-DD
+	Year      int    `json:"year,omitempty"`
+	Month     int    `json:"month,omitempty"`
+	MediaType string `json:"media_type,omitempty"`
+	Page      int    `json:"page,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+type PhotosByDateGroup struct {
+	Date   string  `json:"date"`
+	Count  int64   `json:"count"`
+	Photos []Photo `json:"photos"`
+}
