@@ -1,6 +1,6 @@
 # Web Gallery Backend (Go Fiber + SQLite)
 
-Backend RESTful API berkinerja tinggi untuk aplikasi Web Gallery dengan fitur **Timeline View**, **File-Manager Style Folder View**, **Foto & Video Scanner**, **EXIF Metadata & Video Duration Extractor**, **Thumbnail Generator**, **Browser Caching (ETag & Cache-Control)**, dan **Pagination**.
+Backend RESTful API berkinerja tinggi untuk aplikasi Web Gallery dengan fitur **Timeline View**, **File-Manager Style Folder View**, **Group by Date pada Folder View**, **Foto & Video Scanner**, **EXIF Metadata & Video Duration Extractor**, **Thumbnail Generator**, **Browser Caching (ETag & Cache-Control)**, dan **Pagination**.
 
 ---
 
@@ -11,6 +11,7 @@ Backend RESTful API berkinerja tinggi untuk aplikasi Web Gallery dengan fitur **
 - **Dukungan Foto & Video**:
   - **Foto**: `.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`, `.heic`.
   - **Video**: `.mp4`, `.mkv`, `.mov`, `.avi`, `.webm`, `.m4v`, `.flv`, `.3gp`, `.ts`, `.wmv`.
+- **Group by Date pada Folder View**: Item media di dalam Folder View dikelompokkan secara otomatis berdasarkan tanggal (`date_groups` dalam format `YYYY-MM-DD`).
 - **Automatic Video Thumbnail & Duration Extraction**: Menggunakan `ffmpeg` untuk mengekstrak thumbnail frame video dan `ffprobe` untuk menghitung `duration` (dalam detik).
 - **Auto Environment Loading**: Otomatis membaca konfigurasi dari berkas `.env` saat aplikasi dinyalakan.
 - **Folder Cover Thumbnails**: Setiap folder secara otomatis memiliki thumbnail preview (`thumbnail_path`, `thumbnail_url`, dan `cover_photo_id`) yang diambil dari media terbaru di dalam folder tersebut.
@@ -63,8 +64,7 @@ MAX_SCAN_WORKERS=4
 
 #### A. Memicu Manual Scan
 - **Endpoint**: `POST /api/v1/scan/start`
-- **Request**: `POST /api/v1/scan/start`
-- **Response**:
+- **Response**: `202 Accepted`
 ```json
 {
   "success": true,
@@ -83,8 +83,7 @@ MAX_SCAN_WORKERS=4
 
 #### B. Cek Status Scan
 - **Endpoint**: `GET /api/v1/scan/status`
-- **Request**: `GET /api/v1/scan/status`
-- **Response**:
+- **Response**: `200 OK`
 ```json
 {
   "success": true,
@@ -104,44 +103,72 @@ MAX_SCAN_WORKERS=4
 
 ---
 
-### 3. File-Manager Folder View API
+### 3. File-Manager Folder View API (With Group by Date)
 
 #### A. Konten Folder Per Tingkatan (File Manager View)
+Ketika pengguna mengeklik suatu folder, endpoint ini mengembalikan:
+- `sub_folders`: Sub-folder langsung di dalam folder tersebut (dengan `thumbnail_url` & `cover_photo_id`).
+- `date_groups`: Media di dalam folder tersebut yang **dikelompokkan berdasarkan tanggal** (`date`, `count`, `photos`).
+- `photos`: List datar seluruh media di dalam folder tersebut.
+
 - **Endpoint**: `GET /api/v1/folders/contents?folder_path={path}&page={page}&limit={limit}`
-- **Request**: `GET /api/v1/folders/contents?folder_path=media&page=1&limit=2`
+- **Query Parameters**:
+  - `folder_path` (string, opsional): Path folder yang ingin dibuka (contoh: `media` atau `media/Events`). Jika kosong, otomatis membuka root folder.
+  - `page` (int, default `1`): Nomor halaman foto.
+  - `limit` (int, default `50`): Jumlah foto per halaman.
+- **Request**: `GET /api/v1/folders/contents?folder_path=media/Events&page=1&limit=2`
 - **Response**:
 ```json
 {
   "success": true,
   "data": {
-    "current_folder": "media",
-    "parent_folder": "",
+    "current_folder": "media/Events",
+    "parent_folder": "media",
     "sub_folders": [
       {
-        "name": "Events",
-        "path": "media/Events",
+        "name": "Party",
+        "path": "media/Events/Party",
         "photo_count": 2,
         "thumbnail_url": "/api/v1/photos/2/thumbnail",
         "thumbnail_path": ".thumbnails/thumb_831df940749a5d4311345aec035dd703.jpg",
         "cover_photo_id": 2
       }
     ],
+    "date_groups": [
+      {
+        "date": "2026-09-08",
+        "count": 1,
+        "photos": [
+          {
+            "id": 1,
+            "file_path": "media/Events/cake.jpg",
+            "file_name": "cake.jpg",
+            "folder_path": "media/Events",
+            "file_size": 8196,
+            "hash": "bb562ff2241e5a7bd7fcf08a86556b5c4b5111c8f272990472ea1cd630222f38",
+            "media_type": "image",
+            "mime_type": "image/jpeg",
+            "width": 800,
+            "height": 600,
+            "taken_at": "2026-09-08T14:10:32+07:00",
+            "thumbnail_path": ".thumbnails/thumb_a4589017c1682f1620a688bcdc819e72.jpg"
+          }
+        ]
+      }
+    ],
     "photos": [
       {
-        "id": 7,
-        "file_path": "media/sample_video.mp4",
-        "file_name": "sample_video.mp4",
-        "folder_path": "media",
-        "file_size": 22284,
-        "hash": "28399d05cdaefb8b388af883f3c5ebd43318bc704524fcda89b2b7da98826167",
-        "media_type": "video",
-        "mime_type": "video/mp4",
-        "width": 640,
-        "height": 480,
-        "duration": 3.0,
-        "taken_at": "2026-09-08T15:34:59+07:00",
-        "thumbnail_path": ".thumbnails/thumb_726494a0ab1b58490ee61b9947227aae.jpg",
-        "mod_time": "2026-09-08T15:34:59+07:00"
+        "id": 1,
+        "file_path": "media/Events/cake.jpg",
+        "file_name": "cake.jpg",
+        "folder_path": "media/Events",
+        "file_size": 8196,
+        "media_type": "image",
+        "mime_type": "image/jpeg",
+        "width": 800,
+        "height": 600,
+        "taken_at": "2026-09-08T14:10:32+07:00",
+        "thumbnail_path": ".thumbnails/thumb_a4589017c1682f1620a688bcdc819e72.jpg"
       }
     ]
   },
@@ -156,75 +183,36 @@ MAX_SCAN_WORKERS=4
 }
 ```
 
----
-
-### 4. Timeline View API
-
-#### A. Foto & Video Timeline (Paginated)
-- **Endpoint**: `GET /api/v1/photos/timeline?page={page}&limit={limit}`
+#### B. Full Folder Tree (Tree View untuk Sidebar Navigation)
+- **Endpoint**: `GET /api/v1/folders/tree`
+- **Request**: `GET /api/v1/folders/tree`
 - **Response**:
 ```json
 {
   "success": true,
+  "message": "Folder tree retrieved successfully",
   "data": [
     {
-      "id": 7,
-      "file_path": "media/sample_video.mp4",
-      "file_name": "sample_video.mp4",
-      "folder_path": "media",
-      "file_size": 22284,
-      "media_type": "video",
-      "mime_type": "video/mp4",
-      "width": 640,
-      "height": 480,
-      "duration": 3.0,
-      "taken_at": "2026-09-08T15:34:59+07:00",
-      "thumbnail_path": ".thumbnails/thumb_726494a0ab1b58490ee61b9947227aae.jpg"
+      "name": "Events",
+      "path": "media/Events",
+      "photo_count": 0,
+      "thumbnail_url": "/api/v1/photos/2/thumbnail",
+      "thumbnail_path": ".thumbnails/thumb_831df940749a5d4311345aec035dd703.jpg",
+      "cover_photo_id": 2,
+      "sub_folders": [
+        {
+          "name": "Party",
+          "path": "media/Events/Party",
+          "photo_count": 2,
+          "thumbnail_url": "/api/v1/photos/2/thumbnail",
+          "thumbnail_path": ".thumbnails/thumb_831df940749a5d4311345aec035dd703.jpg",
+          "cover_photo_id": 2
+        }
+      ]
     }
-  ],
-  "pagination": {
-    "page": 1,
-    "limit": 2,
-    "total_items": 7,
-    "total_pages": 4,
-    "has_next": true,
-    "has_prev": false
-  }
+  ]
 }
 ```
-
----
-
-### 5. Media Detail & Streaming API
-
-#### A. Detail Metadata Foto/Video
-- **Endpoint**: `GET /api/v1/photos/:id`
-- **Request**: `GET /api/v1/photos/7`
-- **Response**:
-```json
-{
-  "success": true,
-  "message": "Photo retrieved successfully",
-  "data": {
-    "id": 7,
-    "file_path": "media/sample_video.mp4",
-    "file_name": "sample_video.mp4",
-    "folder_path": "media",
-    "file_size": 22284,
-    "media_type": "video",
-    "mime_type": "video/mp4",
-    "width": 640,
-    "height": 480,
-    "duration": 3.0,
-    "taken_at": "2026-09-08T15:34:59+07:00",
-    "thumbnail_path": ".thumbnails/thumb_726494a0ab1b58490ee61b9947227aae.jpg"
-  }
-}
-```
-
-#### B. Serve Raw Media / Video Stream (HTTP Range)
-- **Endpoint**: `GET /api/v1/photos/:id/raw`
-- **Response**: Stream file biner video (`video/mp4`, `video/webm`, dll.) dengan dukungan penuh HTTP Range (`206 Partial Content`) untuk pemutaran video / seeking di HTML5 `<video>` player.
 
 ---
 

@@ -1,5 +1,11 @@
 package model
 
+type DateGroup struct {
+	Date   string  `json:"date"`
+	Count  int     `json:"count"`
+	Photos []Photo `json:"photos"`
+}
+
 type FolderNode struct {
 	Name          string        `json:"name"`
 	Path          string        `json:"path"`
@@ -25,5 +31,6 @@ type FolderContent struct {
 	CurrentFolder string       `json:"current_folder"`
 	ParentFolder  string       `json:"parent_folder,omitempty"`
 	SubFolders    []FolderNode `json:"sub_folders"`
+	DateGroups    []DateGroup  `json:"date_groups"`
 	Photos        []Photo      `json:"photos"`
 }

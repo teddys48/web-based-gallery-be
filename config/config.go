@@ -9,29 +9,34 @@ import (
 )
 
 type Config struct {
-	Port           string
-	MediaDir       string
-	ThumbnailDir   string
-	DBPath         string
-	ThumbWidth     int
-	ThumbHeight    int
-	MaxScanWorkers int
+	Port             string
+	MediaDir         string
+	ThumbnailDir     string
+	DBPath           string
+	ThumbWidth       int
+	ThumbHeight      int
+	MaxScanWorkers   int
+	ImageScanWorkers int
+	VideoScanWorkers int
+	FFmpegThreads    int
 }
 
 func LoadConfig() *Config {
-	// Automatically load .env file if available
 	if err := godotenv.Load(); err == nil {
 		log.Println("[CONFIG] Successfully loaded environment variables from .env")
 	}
 
 	return &Config{
-		Port:           getEnv("PORT", "8080"),
-		MediaDir:       getEnv("MEDIA_DIR", "./media"),
-		ThumbnailDir:   getEnv("THUMBNAIL_DIR", "./.thumbnails"),
-		DBPath:         getEnv("DB_PATH", "./gallery.db"),
-		ThumbWidth:     getEnvAsInt("THUMB_WIDTH", 400),
-		ThumbHeight:    getEnvAsInt("THUMB_HEIGHT", 400),
-		MaxScanWorkers: getEnvAsInt("MAX_SCAN_WORKERS", 4),
+		Port:             getEnv("PORT", "8080"),
+		MediaDir:         getEnv("MEDIA_DIR", "./media"),
+		ThumbnailDir:     getEnv("THUMBNAIL_DIR", "./.thumbnails"),
+		DBPath:           getEnv("DB_PATH", "./gallery.db"),
+		ThumbWidth:       getEnvAsInt("THUMB_WIDTH", 400),
+		ThumbHeight:      getEnvAsInt("THUMB_HEIGHT", 400),
+		MaxScanWorkers:   getEnvAsInt("MAX_SCAN_WORKERS", 4),
+		ImageScanWorkers: getEnvAsInt("IMAGE_SCAN_WORKERS", 2),
+		VideoScanWorkers: getEnvAsInt("VIDEO_SCAN_WORKERS", 1),
+		FFmpegThreads:    getEnvAsInt("FFMPEG_THREADS", 1),
 	}
 }
 

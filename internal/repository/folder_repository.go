@@ -201,7 +201,7 @@ func (r *folderRepository) GetFolderContents(targetPath string, page, limit int)
 		return strings.ToLower(subFolders[i].Name) < strings.ToLower(subFolders[j].Name)
 	})
 
-	// Fetch direct photos inside cleanTarget (paginated)
+	// Fetch direct photos inside cleanTarget ordered by date taken (paginated)
 	var photos []model.Photo
 	var totalPhotos int64
 
@@ -211,18 +211,60 @@ func (r *folderRepository) GetFolderContents(targetPath string, page, limit int)
 	}
 
 	offset := (page - 1) * limit
-	if err := photoQuery.Order("file_name ASC").Offset(offset).Limit(limit).Find(&photos).Error; err != nil {
+	if err := photoQuery.Order("taken_at DESC, file_name ASC").Offset(offset).Limit(limit).Find(&photos).Error; err != nil {
 		return nil, 0, err
 	}
+
+	// Group photos by date
+	dateGroups := groupPhotosByDate(photos)
 
 	content := &model.FolderContent{
 		CurrentFolder: cleanTarget,
 		ParentFolder:  parentFolder,
 		SubFolders:    subFolders,
+		DateGroups:    dateGroups,
 		Photos:        photos,
 	}
 
 	return content, totalPhotos, nil
+}
+
+func groupPhotosByDate(photos []model.Photo) []model.DateGroup {
+	if len(photos) == 0 {
+		return []model.DateGroup{}
+	}
+
+	var groups []model.DateGroup
+	groupMap := make(map[string]*model.DateGroup)
+	var dateOrder []string
+
+	for _, p := range photos {
+		dateStr := "Unknown"
+		if !p.TakenAt.IsZero() {
+			dateStr = p.TakenAt.Format("2006-01-02")
+		} else if !p.ModTime.IsZero() {
+			dateStr = p.ModTime.Format("2006-01-02")
+		}
+
+		if existing, ok := groupMap[dateStr]; ok {
+			existing.Photos = append(existing.Photos, p)
+			existing.Count++
+		} else {
+			dg := &model.DateGroup{
+				Date:   dateStr,
+				Count:  1,
+				Photos: []model.Photo{p},
+			}
+			groupMap[dateStr] = dg
+			dateOrder = append(dateOrder, dateStr)
+		}
+	}
+
+	for _, d := range dateOrder {
+		groups = append(groups, *groupMap[d])
+	}
+
+	return groups
 }
 
 func (r *folderRepository) getFolderCoversMap() map[string]model.FolderCover {
@@ -248,13 +290,11 @@ func (r *folderRepository) getFolderCoversMap() map[string]model.FolderCover {
 
 func getCoverForFolder(folderPath string, coverMap map[string]model.FolderCover) (string, uint, string) {
 	clean := filepath.Clean(folderPath)
-	// 1. Prefer photo directly inside this folder
 	if c, ok := coverMap[clean]; ok && c.CoverPhotoID > 0 {
 		url := fmt.Sprintf("/api/v1/photos/%d/thumbnail", c.CoverPhotoID)
 		return c.ThumbnailPath, c.CoverPhotoID, url
 	}
 
-	// 2. Fallback to subfolder photo if no direct photo
 	prefix := clean + string(filepath.Separator)
 	for p, c := range coverMap {
 		if strings.HasPrefix(p, prefix) && c.CoverPhotoID > 0 {
@@ -273,21 +313,18 @@ func resolveFolderPath(targetPath, baseRoot string, knownPaths []string) string 
 
 	cleanTarget := filepath.Clean(targetPath)
 
-	// Direct exact match
 	for _, p := range knownPaths {
 		if p == cleanTarget {
 			return p
 		}
 	}
 
-	// Check suffix match
 	for _, p := range knownPaths {
 		if strings.HasSuffix(p, cleanTarget) || strings.HasSuffix(cleanTarget, p) {
 			return p
 		}
 	}
 
-	// Check subpath under baseRoot
 	if !strings.HasPrefix(cleanTarget, baseRoot) && !filepath.IsAbs(cleanTarget) {
 		joined := filepath.Join(baseRoot, cleanTarget)
 		for _, p := range knownPaths {

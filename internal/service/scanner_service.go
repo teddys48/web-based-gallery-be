@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"log"
 	"mime"
 	"os"
@@ -33,6 +32,11 @@ type scannerService struct {
 	imageExts    map[string]bool
 	videoExts    map[string]bool
 	supportedExt map[string]bool
+}
+
+type scanJob struct {
+	path string
+	info os.FileInfo
 }
 
 func NewScannerService(
@@ -69,6 +73,16 @@ func NewScannerService(
 	}
 	for ext := range videoExts {
 		supportedExt[ext] = true
+	}
+
+	if cfg.ImageScanWorkers <= 0 {
+		cfg.ImageScanWorkers = 2
+	}
+	if cfg.VideoScanWorkers <= 0 {
+		cfg.VideoScanWorkers = 1
+	}
+	if cfg.FFmpegThreads <= 0 {
+		cfg.FFmpegThreads = 1
 	}
 
 	return &scannerService{
@@ -116,14 +130,21 @@ func (s *scannerService) StartScan() (*model.ScanStatus, error) {
 }
 
 func (s *scannerService) runScan() {
-	log.Println("[SCANNER] Starting media directory scan:", s.cfg.MediaDir)
+	log.Printf("[SCANNER] Starting media directory scan: %s (Image Workers: %d, Video Workers: %d, FFmpeg Threads: %d)",
+		s.cfg.MediaDir, s.cfg.ImageScanWorkers, s.cfg.VideoScanWorkers, s.cfg.FFmpegThreads)
 
 	if err := os.MkdirAll(s.cfg.MediaDir, 0755); err != nil {
 		s.finishScanWithError(fmt.Sprintf("failed to create media directory: %v", err))
 		return
 	}
 
-	var filesToProcess []string
+	// 1. Gather all files in media directory
+	type fileEntry struct {
+		path string
+		info os.FileInfo
+	}
+	var filesToProcess []fileEntry
+
 	err := filepath.WalkDir(s.cfg.MediaDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -137,7 +158,9 @@ func (s *scannerService) runScan() {
 
 		ext := strings.ToLower(filepath.Ext(path))
 		if s.supportedExt[ext] {
-			filesToProcess = append(filesToProcess, path)
+			if info, err := d.Info(); err == nil {
+				filesToProcess = append(filesToProcess, fileEntry{path: path, info: info})
+			}
 		}
 		return nil
 	})
@@ -151,50 +174,121 @@ func (s *scannerService) runScan() {
 	s.status.TotalFound = len(filesToProcess)
 	s.statusMu.Unlock()
 
+	// 2. Pre-fetch existing records from DB for instant early filter
 	dbPhotos, err := s.repo.GetAllFilePathsMap()
 	if err != nil {
-		log.Printf("[SCANNER] Warning: failed to fetch DB photos map: %v", err)
-		dbPhotos = make(map[string]model.Photo)
+		s.finishScanWithError(fmt.Sprintf("failed to fetch DB photos map: %v", err))
+		return
 	}
 
+	// Channels for work queues
+	imageJobChan := make(chan scanJob, 100)
+	videoJobChan := make(chan scanJob, 50)
+	resultChan := make(chan *model.Photo, 100)
+
 	var scannedPaths []string
-	for _, path := range filesToProcess {
-		s.statusMu.Lock()
-		s.status.CurrentFile = path
-		s.statusMu.Unlock()
+	var scannedPathsMu sync.Mutex
 
-		scannedPaths = append(scannedPaths, path)
+	var workerWg sync.WaitGroup
+	var collectorWg sync.WaitGroup
 
-		fi, err := os.Stat(path)
-		if err != nil {
-			s.incrementError()
-			continue
+	// 3. Single DB Collector Goroutine to prevent SQLite lock contention
+	collectorWg.Add(1)
+	go func() {
+		defer collectorWg.Done()
+		for photo := range resultChan {
+			if photo == nil {
+				continue
+			}
+			if err := s.repo.Upsert(photo); err != nil {
+				log.Printf("[SCANNER] Error upserting DB for %s: %v", photo.FilePath, err)
+				s.incrementError()
+			}
 		}
+	}()
 
+	// 4. Image Worker Pool
+	for i := 0; i < s.cfg.ImageScanWorkers; i++ {
+		workerWg.Add(1)
+		go func(workerID int) {
+			defer workerWg.Done()
+			for job := range imageJobChan {
+				s.setCurrentFile(job.path)
+
+				photo, err := s.processImageFile(job.path, job.info)
+				if err != nil {
+					log.Printf("[SCANNER] Image worker %d error processing %s: %v", workerID, job.path, err)
+					s.incrementError()
+					continue
+				}
+
+				_, isExisting := dbPhotos[job.path]
+				s.incrementScanned(!isExisting)
+				resultChan <- photo
+			}
+		}(i + 1)
+	}
+
+	// 5. Video Worker Pool (Throttled, e.g., 1 worker)
+	for i := 0; i < s.cfg.VideoScanWorkers; i++ {
+		workerWg.Add(1)
+		go func(workerID int) {
+			defer workerWg.Done()
+			for job := range videoJobChan {
+				s.setCurrentFile(job.path)
+
+				photo, err := s.processVideoFile(job.path, job.info)
+				if err != nil {
+					log.Printf("[SCANNER] Video worker %d error processing %s: %v", workerID, job.path, err)
+					s.incrementError()
+					continue
+				}
+
+				_, isExisting := dbPhotos[job.path]
+				s.incrementScanned(!isExisting)
+				resultChan <- photo
+			}
+		}(i + 1)
+	}
+
+	// 6. Walk & Dispatch Loop (Early Size + ModTime Filter)
+	for _, entry := range filesToProcess {
+		path := entry.path
+		fi := entry.info
+		ext := strings.ToLower(filepath.Ext(path))
+
+		scannedPathsMu.Lock()
+		scannedPaths = append(scannedPaths, path)
+		scannedPathsMu.Unlock()
+
+		// Early check: if size & modtime match, skip expensive processing!
 		if existing, ok := dbPhotos[path]; ok {
 			if existing.FileSize == fi.Size() && existing.ModTime.Equal(fi.ModTime()) && existing.ThumbnailPath != "" {
 				s.incrementScanned(false)
 				continue
 			}
+			// Invalidate old thumbnail if file was modified
+			_ = s.thumbSvc.DeleteThumbnail(path)
 		}
 
-		photo, err := s.processFile(path, fi)
-		if err != nil {
-			log.Printf("[SCANNER] Error processing %s: %v", path, err)
-			s.incrementError()
-			continue
+		job := scanJob{path: path, info: fi}
+		if s.videoExts[ext] {
+			videoJobChan <- job
+		} else {
+			imageJobChan <- job
 		}
-
-		if err := s.repo.Upsert(photo); err != nil {
-			log.Printf("[SCANNER] Error upserting DB for %s: %v", path, err)
-			s.incrementError()
-			continue
-		}
-
-		_, isExisting := dbPhotos[path]
-		s.incrementScanned(!isExisting)
 	}
 
+	// Close job channels and wait for workers to complete
+	close(imageJobChan)
+	close(videoJobChan)
+	workerWg.Wait()
+
+	// Close result channel and wait for DB collector to finish writing
+	close(resultChan)
+	collectorWg.Wait()
+
+	// 7. Cleanup missing paths in DB
 	deletedCount, err := s.repo.DeleteMissingPaths(scannedPaths)
 	if err != nil {
 		log.Printf("[SCANNER] Warning: failed to delete missing records: %v", err)
@@ -209,43 +303,16 @@ func (s *scannerService) runScan() {
 	s.status.FinishedAt = &now
 	s.statusMu.Unlock()
 
-	log.Printf("[SCANNER] Completed. Processed: %d, New: %d, Errors: %d",
-		s.status.ScannedCount, s.status.NewCount, s.status.ErrorCount)
+	log.Printf("[SCANNER] Scan completed. Total: %d, Processed/Updated: %d, New: %d, Errors: %d",
+		s.status.TotalFound, s.status.ScannedCount, s.status.NewCount, s.status.ErrorCount)
 }
 
-func (s *scannerService) processFile(path string, fi os.FileInfo) (*model.Photo, error) {
+func (s *scannerService) processImageFile(path string, fi os.FileInfo) (*model.Photo, error) {
 	relFolder := filepath.Dir(path)
 	ext := strings.ToLower(filepath.Ext(path))
 
-	hashStr := calculateFileHash(path)
+	hashStr := calculateFastFileHash(path, fi.Size(), fi.ModTime())
 
-	if s.videoExts[ext] {
-		// Process Video File
-		thumbPath, duration, width, height, err := s.thumbSvc.GenerateVideoThumbnail(path)
-		if err != nil {
-			log.Printf("[SCANNER] Failed video thumbnail generation for %s: %v", path, err)
-		}
-
-		mimeType := getMIMEType(ext, "video/mp4")
-
-		return &model.Photo{
-			FilePath:      path,
-			FileName:      fi.Name(),
-			FolderPath:    relFolder,
-			FileSize:      fi.Size(),
-			Hash:          hashStr,
-			MediaType:     "video",
-			MIMEType:      mimeType,
-			Width:         width,
-			Height:        height,
-			Duration:      duration,
-			TakenAt:       fi.ModTime(),
-			ThumbnailPath: thumbPath,
-			ModTime:       fi.ModTime(),
-		}, nil
-	}
-
-	// Process Image File
 	meta, err := s.exifSvc.ExtractMetadata(path)
 	if err != nil {
 		meta = &EXIFMetadata{
@@ -261,7 +328,7 @@ func (s *scannerService) processFile(path string, fi os.FileInfo) (*model.Photo,
 
 	mimeType := getMIMEType(ext, "image/jpeg")
 
-	photo := &model.Photo{
+	return &model.Photo{
 		FilePath:      path,
 		FileName:      fi.Name(),
 		FolderPath:    relFolder,
@@ -282,9 +349,37 @@ func (s *scannerService) processFile(path string, fi os.FileInfo) (*model.Photo,
 		Longitude:     meta.Longitude,
 		ThumbnailPath: thumbPath,
 		ModTime:       fi.ModTime(),
+	}, nil
+}
+
+func (s *scannerService) processVideoFile(path string, fi os.FileInfo) (*model.Photo, error) {
+	relFolder := filepath.Dir(path)
+	ext := strings.ToLower(filepath.Ext(path))
+
+	hashStr := calculateFastFileHash(path, fi.Size(), fi.ModTime())
+
+	thumbPath, duration, width, height, err := s.thumbSvc.GenerateVideoThumbnail(path)
+	if err != nil {
+		log.Printf("[SCANNER] Failed video thumbnail generation for %s: %v", path, err)
 	}
 
-	return photo, nil
+	mimeType := getMIMEType(ext, "video/mp4")
+
+	return &model.Photo{
+		FilePath:      path,
+		FileName:      fi.Name(),
+		FolderPath:    relFolder,
+		FileSize:      fi.Size(),
+		Hash:          hashStr,
+		MediaType:     "video",
+		MIMEType:      mimeType,
+		Width:         width,
+		Height:        height,
+		Duration:      duration,
+		TakenAt:       fi.ModTime(),
+		ThumbnailPath: thumbPath,
+		ModTime:       fi.ModTime(),
+	}, nil
 }
 
 func getMIMEType(ext, fallback string) string {
@@ -308,19 +403,15 @@ func getMIMEType(ext, fallback string) string {
 	}
 }
 
-func calculateFileHash(filePath string) string {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
+func calculateFastFileHash(filePath string, size int64, modTime time.Time) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d", filePath, size, modTime.UnixNano())))
+	return hex.EncodeToString(h[:])
+}
 
-	h := sha256.New()
-	buf := make([]byte, 1024*1024)
-	n, _ := io.ReadFull(f, buf)
-	h.Write(buf[:n])
-
-	return hex.EncodeToString(h.Sum(nil))
+func (s *scannerService) setCurrentFile(path string) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.status.CurrentFile = path
 }
 
 func (s *scannerService) incrementScanned(isNew bool) {
@@ -338,6 +429,7 @@ func (s *scannerService) incrementError() {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	s.status.ErrorCount++
+	s.status.ScannedCount++
 }
 
 func (s *scannerService) finishScanWithError(errMsg string) {
