@@ -83,7 +83,7 @@ func (h *FolderHandler) photoSvcGetTimelineFallback(c *fiber.Ctx, page, limit in
 
 // DownloadFolderZip GET /api/v1/folders/download?path=media/Vacation2025
 // Packages a folder and all its subdirectories into a .zip streamed directly to the HTTP response
-func (h *FolderHandler) DownloadFolderZip(c *fiber.Ctx) error {
+func (h *FolderHandler) DownloadFolderZip2(c *fiber.Ctx) error {
 	folderPath := c.Query("path", "")
 	if folderPath == "" {
 		folderPath = c.Query("folder_path", "")
@@ -227,6 +227,194 @@ func (h *FolderHandler) DownloadFolderZip(c *fiber.Ctx) error {
 			_, _ = io.Copy(writer, srcFile)
 			_ = srcFile.Close()
 		}
+	}()
+
+	return c.SendStream(pr)
+}
+
+func (h *FolderHandler) DownloadFolderZip(c *fiber.Ctx) error {
+	folderPath := c.Query("path", "")
+	if folderPath == "" {
+		folderPath = c.Query("folder_path", "")
+	}
+
+	// Normalize input path
+	normPath := util.NormalizeMediaPath(h.cfg.MediaDir, folderPath)
+	physicalPath := util.ResolvePhysicalPath(h.cfg.MediaDir, normPath)
+
+	// Resolve media directory
+	mediaDirAbs, err := filepath.Abs(h.cfg.MediaDir)
+	if err != nil {
+		return response.Error(c, fiber.StatusInternalServerError,
+			"Failed to resolve media directory path")
+	}
+
+	mediaDirCanonical, err := filepath.EvalSymlinks(mediaDirAbs)
+	if err != nil {
+		mediaDirCanonical = mediaDirAbs
+	}
+
+	// Resolve target
+	targetAbs, err := filepath.Abs(physicalPath)
+	if err != nil {
+		return response.Error(c, fiber.StatusBadRequest,
+			"Invalid folder path")
+	}
+
+	targetCanonical, err := filepath.EvalSymlinks(targetAbs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return response.Error(c, fiber.StatusNotFound,
+				"Folder not found")
+		}
+
+		targetCanonical = targetAbs
+	}
+
+	// Security boundary check
+	mediaDirClean := filepath.Clean(mediaDirCanonical)
+	targetClean := filepath.Clean(targetCanonical)
+
+	if targetClean != mediaDirClean &&
+		!strings.HasPrefix(
+			targetClean,
+			mediaDirClean+string(filepath.Separator),
+		) {
+		return response.Error(c, fiber.StatusForbidden,
+			"Path traversal detected: target path is outside media directory")
+	}
+
+	// Verify directory
+	fi, err := os.Stat(targetClean)
+	if err != nil || !fi.IsDir() {
+		return response.Error(c, fiber.StatusNotFound,
+			"Folder not found")
+	}
+
+	// ZIP filename
+	zipBaseName := filepath.Base(targetClean)
+	if targetClean == mediaDirClean ||
+		zipBaseName == "." ||
+		zipBaseName == "/" {
+		zipBaseName = "media"
+	}
+
+	zipFileName := fmt.Sprintf("%s.zip", zipBaseName)
+
+	c.Set("Content-Type", "application/zip")
+	c.Set(
+		"Content-Disposition",
+		fmt.Sprintf(`attachment; filename="%s"`, zipFileName),
+	)
+
+	// Pipe allows ZIP to stream directly to HTTP response.
+	pr, pw := io.Pipe()
+
+	go func() {
+		zipWriter := zip.NewWriter(pw)
+
+		walkErr := filepath.WalkDir(
+			targetClean,
+			func(path string, d os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+
+				baseName := d.Name()
+
+				// Skip hidden/temp files
+				if strings.HasPrefix(baseName, ".") ||
+					strings.HasSuffix(baseName, ".tmp") ||
+					strings.HasSuffix(baseName, ".tmp.jpg") {
+
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+
+					return nil
+				}
+
+				if d.IsDir() {
+					return nil
+				}
+
+				info, err := d.Info()
+				if err != nil {
+					return err
+				}
+
+				if info.Size() == 0 {
+					return nil
+				}
+
+				relPath, err := filepath.Rel(targetClean, path)
+				if err != nil {
+					return err
+				}
+
+				header, err := zip.FileInfoHeader(info)
+				if err != nil {
+					return err
+				}
+
+				header.Name = filepath.ToSlash(relPath)
+
+				// Media files are already compressed.
+				header.Method = zip.Store
+
+				writer, err := zipWriter.CreateHeader(header)
+				if err != nil {
+					return err
+				}
+
+				srcFile, err := os.Open(path)
+				if err != nil {
+					return fmt.Errorf(
+						"open %s: %w",
+						path,
+						err,
+					)
+				}
+
+				_, copyErr := io.Copy(writer, srcFile)
+
+				closeErr := srcFile.Close()
+				if copyErr != nil {
+					return fmt.Errorf(
+						"copy %s: %w",
+						path,
+						copyErr,
+					)
+				}
+
+				if closeErr != nil {
+					return fmt.Errorf(
+						"close %s: %w",
+						path,
+						closeErr,
+					)
+				}
+
+				return nil
+			},
+		)
+
+		// VERY IMPORTANT:
+		// Close ZIP before closing the pipe so the
+		// central directory is written.
+		zipErr := zipWriter.Close()
+
+		if walkErr != nil {
+			_ = pw.CloseWithError(walkErr)
+			return
+		}
+
+		if zipErr != nil {
+			_ = pw.CloseWithError(zipErr)
+			return
+		}
+
+		_ = pw.Close()
 	}()
 
 	return c.SendStream(pr)
