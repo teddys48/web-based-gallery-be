@@ -1,6 +1,6 @@
 # Web Gallery Backend (Go Fiber + SQLite)
 
-Backend RESTful API berkinerja tinggi untuk aplikasi Web Gallery dengan fitur **Optimasi Drive Skala Besar (1TB+ HDD)**, **Dual Worker Pool Scanner**, **Timeline View & Timeline Buckets**, **File-Manager Style Folder View**, **Group by Date pada Folder View**, **Get Media by Date API**, **Automatic Video Frame Extraction**, **EXIF Metadata Extractor**, **Thumbnail Generator dengan Atomic Rename & Validasi Dekode**, **Browser Caching (ETag & Cache-Control)**, dan **Pagination**.
+Backend RESTful API berkinerja tinggi untuk aplikasi Web Gallery dengan fitur **Optimasi Drive Skala Besar (1TB+ HDD)**, **Dual Worker Pool Scanner**, **Timeline View & Timeline Buckets**, **File-Manager Style Folder View**, **Group by Date pada Folder View**, **Get Media by Date API**, **Automatic Video Frame Extraction**, **EXIF Metadata Extractor**, **Thumbnail Generator dengan Atomic Rename & Validasi Dekode**, **Browser Caching (ETag & Cache-Control)**, **Pagination**, dan **Stream Download Folder ZIP**.
 
 ---
 
@@ -27,6 +27,7 @@ Backend RESTful API berkinerja tinggi untuk aplikasi Web Gallery dengan fitur **
 - **Folder Cover Thumbnails**: Setiap folder secara otomatis memiliki thumbnail preview (`thumbnail_path`, `thumbnail_url`, dan `cover_photo_id`) yang diambil dari media terbaru di dalam folder tersebut.
 - **File Manager Folder View**: Menelusuri direktori secara interaktif per folder (`GET /api/v1/folders/contents?folder_path=...`) yang hanya menampilkan folder anak langsung dan media di dalam folder tersebut.
 - **EXIF Metadata Extractor**: Mengekstrak `DateTimeOriginal`, dimensi `Width` & `Height`, merk/model kamera (`CameraMake`, `CameraModel`), `FNumber`, `ExposureTime`, `ISO`, `FocalLength`, dan koordinat GPS (`Latitude`, `Longitude`).
+- **Stream Download Folder ZIP**: Mengunduh seluruh isi folder beserta sub-foldernya secara rekursif dalam format `.zip` melalui HTTP streaming (`io.Pipe()`) tanpa membuat temporary file di disk (read-only safe) dan tanpa beban RAM ($O(1)$ RAM footprint).
 - **Browser Caching & Video Streaming**: Menggunakan header `Cache-Control`, `ETag`, support HTTP `304 Not Modified`, serta support HTTP `Range` streaming untuk pemutaran video.
 
 ---
@@ -277,6 +278,22 @@ Ketika pengguna mengeklik suatu folder, endpoint ini mengembalikan:
   ]
 }
 ```
+
+#### C. Download Folder ZIP (Streaming ZIP Archive)
+Mengunduh seluruh berkas dan sub-folder di dalam folder yang ditentukan dalam bentuk file `.zip`. Proses pengemasan dilakukan secara langsung (HTTP Streaming) tanpa membaca seluruh file ke RAM dan tanpa membuat temporary file di `MEDIA_DIR`.
+
+- **Endpoint**: `GET /api/v1/folders/download`
+- **Query Parameters**:
+  - `path` (string, opsional): Relative path folder yang ingin diunduh (contoh: `media/Events` atau `media/Events/Party`). Jika tidak diisi atau `.`, mengunduh seluruh isi root `MEDIA_DIR`.
+- **Request Example**: `GET /api/v1/folders/download?path=media/Events`
+- **Response Headers**:
+  - `Content-Type`: `application/zip`
+  - `Content-Disposition`: `attachment; filename="Events.zip"`
+- **Response Body**: Binary ZIP byte stream.
+- **Error Responses**:
+  - `400 Bad Request`: Folder kosong atau tidak memiliki file readable.
+  - `403 Forbidden`: Upaya *path traversal* (misal menggunakan `../` atau symlink di luar `MEDIA_DIR`).
+  - `404 Not Found`: Folder tidak ditemukan di disk.
 
 ---
 
