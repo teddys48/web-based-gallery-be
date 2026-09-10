@@ -17,6 +17,8 @@ services:
       - THUMB_WIDTH=400
       - THUMB_HEIGHT=400
       - MAX_SCAN_WORKERS=4
+      - AUTO_SCAN_ENABLED=true
+      - AUTO_SCAN_DEBOUNCE_SEC=3
     volumes:
       - ./media:/app/media
       - ./.thumbnails:/app/.thumbnails
