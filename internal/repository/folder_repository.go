@@ -273,7 +273,7 @@ func (r *folderRepository) getFolderCoversMap() map[string]model.FolderCover {
 		SELECT folder_path, thumbnail_path, id as cover_photo_id
 		FROM (
 			SELECT folder_path, thumbnail_path, id,
-				   ROW_NUMBER() OVER (PARTITION BY folder_path ORDER BY taken_at DESC, id DESC) as rn
+				   ROW_NUMBER() OVER (PARTITION BY folder_path ORDER BY file_name ASC, id ASC) as rn
 			FROM photos
 			WHERE thumbnail_path IS NOT NULL AND thumbnail_path != ''
 		)
@@ -296,8 +296,16 @@ func getCoverForFolder(folderPath string, coverMap map[string]model.FolderCover)
 	}
 
 	prefix := clean + string(filepath.Separator)
-	for p, c := range coverMap {
-		if strings.HasPrefix(p, prefix) && c.CoverPhotoID > 0 {
+	var subFolderKeys []string
+	for p := range coverMap {
+		if strings.HasPrefix(p, prefix) {
+			subFolderKeys = append(subFolderKeys, p)
+		}
+	}
+	sort.Strings(subFolderKeys)
+	for _, p := range subFolderKeys {
+		c := coverMap[p]
+		if c.CoverPhotoID > 0 {
 			url := fmt.Sprintf("/api/v1/photos/%d/thumbnail", c.CoverPhotoID)
 			return c.ThumbnailPath, c.CoverPhotoID, url
 		}

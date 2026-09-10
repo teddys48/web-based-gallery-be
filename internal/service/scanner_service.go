@@ -261,13 +261,16 @@ func (s *scannerService) runScan() {
 		scannedPaths = append(scannedPaths, path)
 		scannedPathsMu.Unlock()
 
-		// Early check: if size & modtime match, skip expensive processing!
+		// Early check: if size & modtime match and valid thumbnail exists, skip expensive processing!
 		if existing, ok := dbPhotos[path]; ok {
-			if existing.FileSize == fi.Size() && existing.ModTime.Equal(fi.ModTime()) && existing.ThumbnailPath != "" {
-				s.incrementScanned(false)
-				continue
+			timeMatches := existing.ModTime.Equal(fi.ModTime()) || existing.ModTime.Unix() == fi.ModTime().Unix()
+			if existing.FileSize == fi.Size() && timeMatches && existing.ThumbnailPath != "" {
+				if _, err := os.Stat(existing.ThumbnailPath); err == nil {
+					s.incrementScanned(false)
+					continue
+				}
 			}
-			// Invalidate old thumbnail if file was modified
+			// Invalidate old thumbnail if file was modified or thumbnail missing
 			_ = s.thumbSvc.DeleteThumbnail(path)
 		}
 

@@ -100,3 +100,65 @@ func TestFolderRepositoryDeduplicationAndPathResolution(t *testing.T) {
 		t.Errorf("Expected 1 photo returned in test folder, got %d", len(contentsTest.Photos))
 	}
 }
+
+func TestFolderCoverFirstPhotoSelection(t *testing.T) {
+	cfg := &config.Config{
+		DBPath: "../../gallery_folder_cover_test.db",
+	}
+
+	db, err := database.InitDB(cfg)
+	if err != nil {
+		t.Fatalf("Failed to init DB: %v", err)
+	}
+
+	repo := repository.NewPhotoRepository(db)
+	folderRepo := repository.NewFolderRepository(db)
+
+	now := time.Now()
+	// Insert z_last photo first with newer time, and a_first photo with older time
+	photoZ := model.Photo{
+		FilePath:      "/home/teddy/Pictures/covers/z_last.png",
+		FileName:      "z_last.png",
+		FolderPath:    "/home/teddy/Pictures/covers",
+		FileSize:      100,
+		TakenAt:       now.Add(1 * time.Hour),
+		ThumbnailPath: "/tmp/thumb_z.jpg",
+	}
+	photoA := model.Photo{
+		FilePath:      "/home/teddy/Pictures/covers/a_first.png",
+		FileName:      "a_first.png",
+		FolderPath:    "/home/teddy/Pictures/covers",
+		FileSize:      100,
+		TakenAt:       now,
+		ThumbnailPath: "/tmp/thumb_a.jpg",
+	}
+
+	if err := repo.Upsert(&photoZ); err != nil {
+		t.Fatalf("Upsert Z failed: %v", err)
+	}
+	if err := repo.Upsert(&photoA); err != nil {
+		t.Fatalf("Upsert A failed: %v", err)
+	}
+
+	tree, err := folderRepo.GetFolderTree()
+	if err != nil {
+		t.Fatalf("GetFolderTree failed: %v", err)
+	}
+
+	var coverNode *model.FolderNode
+	for _, n := range tree {
+		if n.Name == "covers" {
+			coverNode = n
+			break
+		}
+	}
+	if coverNode == nil {
+		t.Fatalf("Expected folder node 'covers' in tree")
+	}
+
+	// Should select a_first.png thumbnail path because it's first alphabetically
+	if coverNode.ThumbnailPath != "/tmp/thumb_a.jpg" {
+		t.Errorf("Expected cover thumbnail /tmp/thumb_a.jpg (first photo), got %s", coverNode.ThumbnailPath)
+	}
+}
+

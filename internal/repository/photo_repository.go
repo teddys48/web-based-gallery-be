@@ -217,7 +217,7 @@ func (r *photoRepository) GetDistinctFolderPaths() ([]string, error) {
 
 func (r *photoRepository) GetAllFilePathsMap() (map[string]model.Photo, error) {
 	var photos []model.Photo
-	if err := r.db.Select("id, file_path, mod_time, file_size, hash").Find(&photos).Error; err != nil {
+	if err := r.db.Select("id, file_path, mod_time, file_size, hash, thumbnail_path").Find(&photos).Error; err != nil {
 		return nil, err
 	}
 
